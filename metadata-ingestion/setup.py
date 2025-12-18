@@ -640,6 +640,7 @@ plugins: Dict[str, Set[str]] = {
     "sac": sac,
     "neo4j": {"pandas", "neo4j"},
     "vertexai": {"google-cloud-aiplatform>=1.80.0"},
+    "flink-catalog": {"apache-flink==1.20.3"},
 }
 
 # This is mainly used to exclude plugins from the Docker image.
