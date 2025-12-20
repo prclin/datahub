@@ -1,8 +1,10 @@
 import json
-from typing import Iterable, Literal, Optional, Union
+from typing import Iterable, Optional, Union
 
+from py4j.java_gateway import JavaObject
 from pydantic import Field, ValidationError, model_validator
-from pyflink.table.catalog import Catalog, JdbcCatalog, ObjectPath
+from pyflink.java_gateway import get_gateway
+from pyflink.table.catalog import ObjectPath
 
 from datahub.configuration.common import AllowDenyPattern
 from datahub.emitter.mce_builder import (
@@ -60,56 +62,33 @@ from datahub.metadata._internal_schema_classes import (
     UnionTypeClass,
 )
 
-kinds = ["hive", "jdbc"]
-FlinkCatalogType = Literal["hive", "jdbc"]
-
 
 class FlinkCatalogConfig(StatefulIngestionConfigBase):
     default_database: str = "default"
+    name: str = "hive"
 
-    class BaseConf:
-        name: str = Field(
-            default=None,
-            description="catalog name,default as catalog type hive or jdbc",
-        )
-        database_pattern: AllowDenyPattern = Field(
-            default=AllowDenyPattern.allow_all(),
-            description="database patterns which need to sync.",
-        )
-        table_pattern: AllowDenyPattern = Field(
-            default=AllowDenyPattern.allow_all(),
-            description="table patterns which need to sync.",
-        )
-        view_pattern: AllowDenyPattern = Field(
-            default=AllowDenyPattern.allow_all(),
-            description="view patterns which need to sync.",
-        )
-
-    class JdbcCatalogConf(BaseConf):
-        username: str = Field(description="jdbc username.")
-        password: str = Field(description="jdbc password.")
-        url: str = Field(description="jdbc url")
-
-    class HiveCatalogConf(BaseConf):
-        hive_version: str = Field(
-            default=None, description="hive version string like 3.1.3"
-        )
-        hive_conf_dir: str = Field(
-            default=None,
-            description="hive configuration directory,which contains the hive-site.xml.",
-        )
-        hive_conf: dict[str, str] = Field(
-            default=None, description="hive configurations."
-        )
-
-    hive_catalog: HiveCatalogConf = Field(
-        default=None,
-        description="flink hive catalog configuration, see also at https://nightlies.apache.org/flink/flink-docs-master/docs/connectors/table/hive/overview/#connecting-to-hive",
+    database_pattern: AllowDenyPattern = Field(
+        default=AllowDenyPattern.allow_all(),
+        description="database patterns which need to sync.",
     )
-    jdbc_catalog: JdbcCatalogConf = Field(
-        default=None,
-        description="flink jdbc catalog configuration, see also at https://nightlies.apache.org/flink/flink-docs-master/docs/connectors/table/jdbc/#usage-of-jdbc-catalog",
+    table_pattern: AllowDenyPattern = Field(
+        default=AllowDenyPattern.allow_all(),
+        description="table patterns which need to sync.",
     )
+    view_pattern: AllowDenyPattern = Field(
+        default=AllowDenyPattern.allow_all(),
+        description="view patterns which need to sync.",
+    )
+
+    hive_version: str = Field(
+        default=None, description="hive version string like 3.1.3"
+    )
+    hive_conf_dir: str = Field(
+        default=None,
+        description="hive configuration directory,which contains the hive-site.xml.",
+    )
+    hive_conf: dict[str, str] = Field(default=None, description="hive configurations.")
+
     stateful_ingestion: Optional[StatefulStaleMetadataRemovalConfig] = Field(
         default=None, description="stateful ingestion configs"
     )
@@ -125,19 +104,12 @@ class FlinkCatalogConfig(StatefulIngestionConfigBase):
     def check_and_complete_conf(self):
         """
         validate the configuration
-        one of the hive_catalog and jdbc_catalog should be not none.
         in hive_catalog, one of hive_conf and hive_conf_dir should be not none.
-        if catalog name is not set,complete it.
         """
-        if not self.hive_catalog and not self.jdbc_catalog:
-            raise ValidationError("should specify at least one catalog config!")
-        if self.hive_catalog:
-            if not self.hive_catalog.hive_conf and self.hive_catalog.hive_conf_dir:
-                raise ValidationError("should specify at least one hive config type!")
-        if self.hive_catalog and not self.hive_catalog.name:
-            self.hive_catalog.name = "hive"
-        if self.jdbc_catalog and not self.jdbc_catalog.name:
-            self.jdbc_catalog.name = "jdbc"
+        if not self.hive_conf and not self.hive_conf_dir:
+            raise ValidationError(
+                "should specify at least one of hive conf and hive conf dir!"
+            )
         return self
 
 
@@ -164,8 +136,35 @@ TYPE_MAP: dict[
         "UnionTypeClass",
     ],
 ] = {
-    "VARCHAR": BooleanTypeClass,
-    "NullClass": NullTypeClass,
+    "CHAR": StringTypeClass,
+    "VARCHAR": StringTypeClass,
+    "BOOLEAN": BooleanTypeClass,
+    "BINARY": BytesTypeClass,
+    "VARBINARY": BytesTypeClass,
+    "DECIMAL": NumberTypeClass,
+    "TINYINT": NumberTypeClass,
+    "SMALLINT": NumberTypeClass,
+    "INTEGER": NumberTypeClass,
+    "BIGINT": NumberTypeClass,
+    "FLOAT": NumberTypeClass,
+    "DOUBLE": NumberTypeClass,
+    "DATE": DateTypeClass,
+    "TIME_WITHOUT_TIME_ZONE": TimeTypeClass,
+    "TIMESTAMP_WITHOUT_TIME_ZONE": TimeTypeClass,
+    "TIMESTAMP_WITH_TIME_ZONE": TimeTypeClass,
+    "TIMESTAMP_WITH_LOCAL_TIME_ZONE": TimeTypeClass,
+    "INTERVAL_YEAR_MONTH": TimeTypeClass,
+    "INTERVAL_DAY_TIME": TimeTypeClass,
+    "ARRAY": ArrayTypeClass,
+    "MULTISET": ArrayTypeClass,
+    "MAP": MapTypeClass,
+    "ROW": RecordTypeClass,
+    "DISTINCT_TYPE": UnionTypeClass,
+    "STRUCTURED_TYPE": UnionTypeClass,
+    "NULL": NullTypeClass,
+    "RAW": FixedTypeClass,
+    "SYMBOL": EnumTypeClass,
+    "UNRESOLVED": UnionTypeClass,
 }
 
 
@@ -178,8 +177,13 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         self.config = config
         self.ctx = ctx
         self.report = FlinkCatalogReport()
-        self.hive_catalog = self.get_hive_catalog()
-        self.jdbc_catalog = self.get_jdbc_catalog()
+        self.catalog = self.get_catalog()
+        jvm = get_gateway().jvm
+        self.data_type_factory = jvm.org.apache.flink.table.catalog.DataTypeFactoryImpl(
+            jvm.Thread.currentThread().contextClassloader,
+            jvm.org.apache.flink.table.api.TableConfig.getDefault(),
+            None,
+        )
 
     def get_workunits_internal(
         self,
@@ -187,62 +191,68 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         # add flink watermark tag
         yield self.gen_watermark_tag()
 
-        kind: FlinkCatalogType
-        for kind in kinds:
-            config, catalog = self.get_config_and_catalog(kind)
-            if not config:
-                continue
-
-            # catalog level
-            yield from self.gen_catalog_containers(kind)
-            # database level
-            databases = self.get_syncable_databases(kind)
-            for database in databases:
-                db = catalog.get_database(database)
-                description = db.get_comment()
-                properties = db.get_properties()
-                yield from self.gen_database_containers(
-                    kind, database, description, properties
+        # database level
+        databases = self.get_syncable_databases()
+        for database in databases:
+            db = self.catalog.get_database(database)
+            description = db.get_comment()
+            properties = db.get_properties()
+            yield from self.gen_database_containers(database, description, properties)
+            # table level
+            tables = self.get_syncable_tables(database)
+            for table in tables:
+                dataset_urn = self.gen_dataset_urn(database, table)
+                # to container
+                yield from add_dataset_to_container(
+                    self.gen_database_key(database), dataset_urn
                 )
-                # todo 获取表和视图信息
-                # table level
-                tables = self.get_syncable_tables(kind, database)
-                for table in tables:
-                    dataset_urn = self.gen_dataset_urn(database, table)
-                    # to container
-                    yield from add_dataset_to_container(
-                        self.gen_database_key(database), dataset_urn
-                    )
-                    # to platform instance
-                    dpi_aspect = self.add_dataset_to_dataplatform_instance(dataset_urn)
-                    if dpi_aspect:
-                        yield dpi_aspect
-                    # subtype
-                    yield self.gen_table_subtype(dataset_urn)
-                    # status
-                    yield self.gen_table_status(dataset_urn)
-                    # dataset properties
-                    yield self.gen_table_properties(kind, database, table)
-                    # schema metadata
-                    yield self.gen_table_schema_metadata(kind, database, table)
-                    # todo 获取位置血缘
+                # to platform instance
+                dpi_aspect = self.add_dataset_to_dataplatform_instance(dataset_urn)
+                if dpi_aspect:
+                    yield dpi_aspect
+                # status
+                yield self.gen_dataset_status(dataset_urn)
+
+                # get table
+                hive_table = self.catalog._j_catalog.getHiveTable(
+                    ObjectPath(database, table)._j_object_path
+                )
+                catalog_table = self.catalog._j_catalog.instantiateCatalogTable(
+                    hive_table
+                )
+
+                # subtype
+                table_kind = catalog_table.getTableKind().name()
+                match table_kind:
+                    case "VIEW":
+                        yield self.gen_dataset_subtype(
+                            dataset_urn, DatasetSubTypes.VIEW
+                        )
+                    case _:
+                        yield self.gen_dataset_subtype(
+                            dataset_urn, DatasetSubTypes.TABLE
+                        )
+
+                # dataset properties
+                yield self.gen_dataset_properties(
+                    database, table, hive_table, catalog_table
+                )
+                # schema metadata
+                yield self.gen_dataset_schema_metadata(database, table, catalog_table)
 
     def gen_watermark_tag(self) -> MetadataWorkUnit:
         return MetadataChangeProposalWrapper(
             entityUrn=self.watermark_tag_urn, aspect=TagKeyClass("watermark")
         ).as_workunit()
 
-    def gen_table_schema_metadata(
-        self, kind: FlinkCatalogType, database: str, table: str
+    def gen_dataset_schema_metadata(
+        self, database: str, table: str, catalog_table: JavaObject
     ) -> MetadataWorkUnit:
-        _, catalog = self.get_config_and_catalog(kind)
-
         # get table info
-        tb = catalog.get_table(ObjectPath(database, table))
-        schema = tb.get_unresolved_schema()._j_schema
+        schema = catalog_table.get_unresolved_schema()
         primary_key = schema.getPrimaryKey().orElse(None)
         primary_keys = primary_key.getColumnNames() if primary_key else []
-        partition_keys = tb._j_catalog_base_table.getPartitionKeys()
+        partition_keys = catalog_table.getPartitionKeys()
 
         # tag watermark
         watermark_specs = schema.getWatermarkSpecs()
@@ -262,7 +272,8 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         schema_fields = []
         for column in schema.getColumns():
             name = column.getName()
-            column_type = column.getDataType().getLogicalType()
+            data_type = column.getDataType().toDataType(self.data_type_factory)
+            column_type = data_type.getLogicalType()
             type_name = column_type.getTypeRoot().name()
             nullable = column_type.isNullable()
             comment = column.getComment()
@@ -284,13 +295,17 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
 
             schema_fields.append(schema_field)
 
+        raw_schema = ""
+        # get view query
+        if catalog_table.getTableKind().name() == "VIEW":
+            raw_schema = catalog_table.getOriginalQuery()
         # construct schema metadata
         schema_metadata = SchemaMetadataClass(
             schemaName=f"${database}.${table}",
             platform=self.platform,
             version=0,
             hash="",
-            platformSchema=OtherSchemaClass(""),
+            platformSchema=OtherSchemaClass(raw_schema),
             fields=schema_fields,
             primaryKeys=primary_keys if primary_keys else None,
         )
@@ -299,30 +314,36 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             entityUrn=self.gen_dataset_urn(database, table), aspect=schema_metadata
         ).as_workunit()
 
-    def gen_table_properties(
-        self, kind: FlinkCatalogType, database: str, table: str
+    def gen_dataset_properties(
+        self,
+        database: str,
+        table: str,
+        hive_table: JavaObject,
+        catalog_table: JavaObject,
     ) -> MetadataWorkUnit:
-        _, catalog = self.get_config_and_catalog(kind)
-        tb = catalog.get_table(ObjectPath(database, table))
+        # put location to options
+        options = catalog_table.get_options()
+        options["location"] = hive_table.getSd().getLocation()
+
         return MetadataChangeProposalWrapper(
             entityUrn=self.gen_dataset_urn(database, table),
             aspect=DatasetPropertiesClass(
-                customProperties=tb.get_options(),
+                customProperties=options,
                 name=table,
                 qualifiedName=f"${database}.${table}",
-                description=tb.get_comment(),
+                description=catalog_table.get_comment(),
             ),
         ).as_workunit()
 
-    def gen_table_status(self, table_urn) -> MetadataWorkUnit:
+    def gen_dataset_status(self, dataset_urn) -> MetadataWorkUnit:
         return MetadataChangeProposalWrapper(
-            entityUrn=table_urn, aspect=StatusClass(removed=False)
+            entityUrn=dataset_urn, aspect=StatusClass(removed=False)
         ).as_workunit()
 
-    def gen_table_subtype(self, table_urn: str) -> MetadataWorkUnit:
+    def gen_dataset_subtype(self, dataset_urn: str, subtype: str) -> MetadataWorkUnit:
         return MetadataChangeProposalWrapper(
-            entityUrn=table_urn,
-            aspect=SubTypesClass(typeNames=[DatasetSubTypes.TABLE]),
+            entityUrn=dataset_urn,
+            aspect=SubTypesClass(typeNames=[subtype]),
         ).as_workunit()
 
     def add_dataset_to_dataplatform_instance(
@@ -349,19 +370,17 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             self.config.env,
         )
 
-    def get_syncable_tables(self, kind: FlinkCatalogType, database: str) -> list[str]:
-        config, catalog = self.get_config_and_catalog(kind)
-        tables = catalog.list_tables(database)
-        return [table for table in tables if config.table_pattern.allowed(table)]
+    def get_syncable_tables(self, database: str) -> list[str]:
+        tables = self.catalog.list_tables(database)
+        return [table for table in tables if self.config.table_pattern.allowed(table)]
 
     def gen_database_containers(
         self,
-        kind: FlinkCatalogType,
         database: str,
         description: Optional[str],
         properties: Optional[dict[str, str]],
     ) -> Iterable[MetadataWorkUnit]:
-        catalog_key = self.gen_catalog_key(kind)
+        catalog_key = self.gen_catalog_key()
         database_key = self.gen_database_key(database)
         yield from gen_containers(
             database_key,
@@ -381,43 +400,25 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             database=database,
         )
 
-    def gen_catalog_containers(
-        self, kind: FlinkCatalogType
-    ) -> Iterable[MetadataWorkUnit]:
-        key = self.gen_catalog_key(kind)
-        config, catalog = self.get_config_and_catalog(kind)
+    def gen_catalog_containers(self) -> Iterable[MetadataWorkUnit]:
+        key = self.gen_catalog_key()
         yield from gen_containers(
             container_key=key,
-            name=config.name,
+            name=self.config.name,
             sub_types=[DatasetContainerSubTypes.CATALOG],
         )
 
-    def gen_catalog_key(self, kind: FlinkCatalogType):
-        config, _ = self.get_config_and_catalog(kind)
+    def gen_catalog_key(self):
         return CatalogKey(
             platform=self.platform,
             instance=self.config.platform_instance,
             env=self.config.env,
             backcompat_env_as_instance=False,
-            catalog=config.name,
+            catalog=self.config.name,
         )
 
-    def get_config_and_catalog(
-        self, kind: FlinkCatalogType
-    ) -> tuple[
-        Union[FlinkCatalogConfig.HiveCatalogConf, FlinkCatalogConfig.JdbcCatalogConf],
-        Catalog,
-    ]:
-        match kind:
-            case "hive":
-                return self.config.hive_catalog, self.hive_catalog
-            case "jdbc":
-                return self.config.jdbc_catalog, self.jdbc_catalog
-            case _:
-                raise ValueError("kind should be hive or jdbc")
-
-    def get_syncable_databases(self, kind: FlinkCatalogType) -> list[str]:
-        config, catalog = self.get_config_and_catalog(kind)
+    def get_syncable_databases(self) -> list[str]:
+        config, catalog = self.config, self.catalog
         databases = catalog.list_databases()
         return [
             database
@@ -425,29 +426,12 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             if config.database_pattern.allowed(database)
         ]
 
-    def get_hive_catalog(self):
+    def get_catalog(self):
         config = self.config
-        return (
-            FlinkHiveCatalog(
-                config.hive_catalog.name,
-                config.default_database,
-                config.hive_conf,
-                config.hive_version,
-            )
-            if config.hive_catalog
-            else None
-        )
-
-    def get_jdbc_catalog(self):
-        config = self.config
-        return (
-            JdbcCatalog(
-                config.jdbc_catalog.name,
-                config.default_database,
-                config.jdbc_conf.username,
-                config.jdbc_conf.password,
-                config.jdbc_conf.url,
-            )
-            if config.jdbc_catalog
-            else None
+        return FlinkHiveCatalog(
+            config.name,
+            config.default_database,
+            config.hive_version,
+            config.hive_conf_dir,
+            config.hive_conf,
         )

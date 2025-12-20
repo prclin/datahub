@@ -792,6 +792,7 @@ base_dev_requirements = {
             "neo4j",
             "vertexai",
             "mssql-odbc",
+            # "flink-catalog"
         ]
         if plugin
         for dependency in plugins[plugin]
