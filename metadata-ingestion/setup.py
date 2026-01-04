@@ -1,6 +1,5 @@
-from typing import Dict, Set
-
 import setuptools
+from typing import Dict, Set
 
 package_metadata: dict = {}
 with open("./src/datahub/_version.py") as fp:
@@ -640,7 +639,7 @@ plugins: Dict[str, Set[str]] = {
     "sac": sac,
     "neo4j": {"pandas", "neo4j"},
     "vertexai": {"google-cloud-aiplatform>=1.80.0"},
-    "flink-catalog": {"apache-flink==1.20.3"},
+    "flink-catalog": {"py4j>=0.10.9.7"},
 }
 
 # This is mainly used to exclude plugins from the Docker image.
@@ -792,7 +791,7 @@ base_dev_requirements = {
             "neo4j",
             "vertexai",
             "mssql-odbc",
-            # "flink-catalog"
+            "flink-catalog"
         ]
         if plugin
         for dependency in plugins[plugin]

@@ -145,4 +145,6 @@ dmypy.json
 
 # Generated classes
 src/datahub/metadata/
+# flink lib jars
+src/datahub/ingestion/source/flink_catalog/lib/
 .preflight_sentinel

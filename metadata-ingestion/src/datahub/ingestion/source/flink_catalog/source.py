@@ -1,10 +1,7 @@
 import json
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional
 
-from py4j.java_gateway import JavaObject
 from pydantic import Field, ValidationError, model_validator
-from pyflink.java_gateway import get_gateway
-from pyflink.table.catalog import ObjectPath
 
 from datahub.configuration.common import AllowDenyPattern
 from datahub.emitter.mce_builder import (
@@ -26,7 +23,12 @@ from datahub.ingestion.source.common.subtypes import (
     DatasetContainerSubTypes,
     DatasetSubTypes,
 )
-from datahub.ingestion.source.flink_catalog.catalog import FlinkHiveCatalog
+from datahub.ingestion.source.flink_catalog.catalog import (
+    CatalogTable,
+    FlinkHiveCatalog,
+    HiveTable,
+)
+from datahub.ingestion.source.flink_catalog.java_gateway import get_gateway
 from datahub.ingestion.source.state.stale_entity_removal_handler import (
     StatefulStaleMetadataRemovalConfig,
 )
@@ -36,30 +38,17 @@ from datahub.ingestion.source.state.stateful_ingestion_base import (
     StatefulIngestionSourceBase,
 )
 from datahub.metadata._internal_schema_classes import (
-    ArrayTypeClass,
-    BooleanTypeClass,
-    BytesTypeClass,
     DataPlatformInstanceClass,
     DatasetPropertiesClass,
-    DateTypeClass,
-    EnumTypeClass,
-    FixedTypeClass,
     GlobalTagsClass,
-    MapTypeClass,
-    NullTypeClass,
-    NumberTypeClass,
     OtherSchemaClass,
-    RecordTypeClass,
     SchemaFieldClass,
     SchemaFieldDataTypeClass,
     SchemaMetadataClass,
     StatusClass,
-    StringTypeClass,
     SubTypesClass,
     TagAssociationClass,
     TagKeyClass,
-    TimeTypeClass,
-    UnionTypeClass,
 )
 
 
@@ -117,57 +106,6 @@ class FlinkCatalogReport(StatefulIngestionReport):
     pass
 
 
-# todo 补全
-TYPE_MAP: dict[
-    str,
-    Union[
-        "BooleanTypeClass",
-        "FixedTypeClass",
-        "StringTypeClass",
-        "BytesTypeClass",
-        "NumberTypeClass",
-        "DateTypeClass",
-        "TimeTypeClass",
-        "EnumTypeClass",
-        "NullTypeClass",
-        "RecordTypeClass",
-        "MapTypeClass",
-        "ArrayTypeClass",
-        "UnionTypeClass",
-    ],
-] = {
-    "CHAR": StringTypeClass,
-    "VARCHAR": StringTypeClass,
-    "BOOLEAN": BooleanTypeClass,
-    "BINARY": BytesTypeClass,
-    "VARBINARY": BytesTypeClass,
-    "DECIMAL": NumberTypeClass,
-    "TINYINT": NumberTypeClass,
-    "SMALLINT": NumberTypeClass,
-    "INTEGER": NumberTypeClass,
-    "BIGINT": NumberTypeClass,
-    "FLOAT": NumberTypeClass,
-    "DOUBLE": NumberTypeClass,
-    "DATE": DateTypeClass,
-    "TIME_WITHOUT_TIME_ZONE": TimeTypeClass,
-    "TIMESTAMP_WITHOUT_TIME_ZONE": TimeTypeClass,
-    "TIMESTAMP_WITH_TIME_ZONE": TimeTypeClass,
-    "TIMESTAMP_WITH_LOCAL_TIME_ZONE": TimeTypeClass,
-    "INTERVAL_YEAR_MONTH": TimeTypeClass,
-    "INTERVAL_DAY_TIME": TimeTypeClass,
-    "ARRAY": ArrayTypeClass,
-    "MULTISET": ArrayTypeClass,
-    "MAP": MapTypeClass,
-    "ROW": RecordTypeClass,
-    "DISTINCT_TYPE": UnionTypeClass,
-    "STRUCTURED_TYPE": UnionTypeClass,
-    "NULL": NullTypeClass,
-    "RAW": FixedTypeClass,
-    "SYMBOL": EnumTypeClass,
-    "UNRESOLVED": UnionTypeClass,
-}
-
-
 class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
     platform: str = "flink"
     watermark_tag_urn: str = make_tag_urn("flink.watermark")
@@ -185,9 +123,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             None,
         )
 
-    def get_workunits_internal(
-        self,
-    ) -> Iterable[MetadataWorkUnit]:
+    def get_workunits_internal(self) -> Iterable[MetadataWorkUnit]:
         # add flink watermark tag
         yield self.gen_watermark_tag()
 
@@ -198,7 +134,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             description = db.get_comment()
             properties = db.get_properties()
             yield from self.gen_database_containers(database, description, properties)
-            # table level
+            # table and view level
             tables = self.get_syncable_tables(database)
             for table in tables:
                 dataset_urn = self.gen_dataset_urn(database, table)
@@ -214,24 +150,17 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
                 yield self.gen_dataset_status(dataset_urn)
 
                 # get table
-                hive_table = self.catalog._j_catalog.getHiveTable(
-                    ObjectPath(database, table)._j_object_path
-                )
-                catalog_table = self.catalog._j_catalog.instantiateCatalogTable(
-                    hive_table
-                )
+                hive_table = self.catalog.get_hive_table(database, table)
+                catalog_table = self.catalog.instantiate_catalog_table(hive_table)
 
                 # subtype
-                table_kind = catalog_table.getTableKind().name()
-                match table_kind:
-                    case "VIEW":
-                        yield self.gen_dataset_subtype(
-                            dataset_urn, DatasetSubTypes.VIEW
-                        )
-                    case _:
-                        yield self.gen_dataset_subtype(
-                            dataset_urn, DatasetSubTypes.TABLE
-                        )
+                table_kind = catalog_table.get_table_kind()
+                yield self.gen_dataset_subtype(
+                    dataset_urn,
+                    DatasetSubTypes.VIEW
+                    if table_kind == "VIEW"
+                    else DatasetSubTypes.TABLE,
+                )
 
                 # dataset properties
                 yield self.gen_dataset_properties(
@@ -246,22 +175,15 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         ).as_workunit()
 
     def gen_dataset_schema_metadata(
-        self, database: str, table: str, catalog_table: JavaObject
+        self, database: str, table: str, catalog_table: CatalogTable
     ) -> MetadataWorkUnit:
         # get table info
         schema = catalog_table.get_unresolved_schema()
-        primary_key = schema.getPrimaryKey().orElse(None)
-        primary_keys = primary_key.getColumnNames() if primary_key else []
-        partition_keys = catalog_table.getPartitionKeys()
+        primary_keys = schema.get_primary_keys()
+        partition_keys = catalog_table.get_partition_keys()
 
         # tag watermark
-        watermark_specs = schema.getWatermarkSpecs()
-        watermark_column = (
-            watermark_specs[0].getColumnName() if watermark_specs else None
-        )
-        watermark_expression = (
-            watermark_specs[0].toString() if watermark_specs else None
-        )
+        watermark_column, watermark_expression = schema.get_watermark_spec()
         watermark_tag = (
             GlobalTagsClass([TagAssociationClass(tag=self.watermark_tag_urn)])
             if watermark_column
@@ -270,35 +192,51 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
 
         # construct fields
         schema_fields = []
-        for column in schema.getColumns():
-            name = column.getName()
-            data_type = column.getDataType().toDataType(self.data_type_factory)
-            column_type = data_type.getLogicalType()
-            type_name = column_type.getTypeRoot().name()
-            nullable = column_type.isNullable()
-            comment = column.getComment()
+        for column in schema.get_columns():
+            name = column.name
+            column_type = column.column_type
 
             schema_field = SchemaFieldClass(
                 fieldPath=name,
-                type=SchemaFieldDataTypeClass(TYPE_MAP.get(type_name)),
-                nativeDataType=type_name,
-                nullable=nullable,
-                description=comment,
+                type=SchemaFieldDataTypeClass(column_type.type_class),
+                nativeDataType=column_type.native_data_type,
+                nullable=column_type.nullable,
+                description=column.comment,
                 recursive=False,
                 isPartOfKey=name in primary_keys,
                 isPartitioningKey=name in partition_keys,
                 globalTags=watermark_tag if name == watermark_column else None,
                 jsonProps=json.dumps({watermark_expression})
-                if name == watermark_expression
+                if name == watermark_column
                 else None,
             )
-
             schema_fields.append(schema_field)
+            # if column's type is Row, add subcolumns
+            if column_type.fields:
+                for field, description, field_type in column_type.fields:
+                    field_name = f"${name}.${field}"
+                    schema_field = SchemaFieldClass(
+                        fieldPath=field_name,
+                        type=SchemaFieldDataTypeClass(field_type.type_class),
+                        nativeDataType=field_type.native_data_type,
+                        nullable=field_type.nullable,
+                        description=description,
+                        recursive=False,
+                        isPartOfKey=field_name in primary_keys,
+                        isPartitioningKey=field_name in partition_keys,
+                        globalTags=watermark_tag
+                        if field_name == watermark_column
+                        else None,
+                        jsonProps=json.dumps({watermark_expression})
+                        if field_name == watermark_column
+                        else None,
+                    )
+                    schema_fields.append(schema_field)
 
         raw_schema = ""
         # get view query
-        if catalog_table.getTableKind().name() == "VIEW":
-            raw_schema = catalog_table.getOriginalQuery()
+        if catalog_table.get_table_kind() == "VIEW":
+            raw_schema = catalog_table.get_original_query()
         # construct schema metadata
         schema_metadata = SchemaMetadataClass(
             schemaName=f"${database}.${table}",
@@ -318,12 +256,12 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         self,
         database: str,
         table: str,
-        hive_table: JavaObject,
-        catalog_table: JavaObject,
+        hive_table: HiveTable,
+        catalog_table: CatalogTable,
     ) -> MetadataWorkUnit:
         # put location to options
         options = catalog_table.get_options()
-        options["location"] = hive_table.getSd().getLocation()
+        options["location"] = hive_table.get_location()
 
         return MetadataChangeProposalWrapper(
             entityUrn=self.gen_dataset_urn(database, table),
