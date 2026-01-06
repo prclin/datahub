@@ -1,5 +1,6 @@
-import setuptools
 from typing import Dict, Set
+
+import setuptools
 
 package_metadata: dict = {}
 with open("./src/datahub/_version.py") as fp:
@@ -150,32 +151,32 @@ sqlalchemy_lib = {
     "sqlalchemy>=1.4.39, <2",
 }
 sql_common = (
-    {
-        *sqlalchemy_lib,
-        # Required for SQL profiling.
-        *great_expectations_lib,
-        # scipy version restricted to reduce backtracking, used by great-expectations,
-        "scipy>=1.7.2",
-        # GE added handling for higher version of jinja2
-        # https://github.com/great-expectations/great_expectations/pull/5382/files
-        # datahub does not depend on traitlets directly but great expectations does.
-        # https://github.com/ipython/traitlets/issues/741
-        "traitlets!=5.2.2",
-        # GE depends on IPython - we have no direct dependency on it.
-        # IPython 8.22.0 added a dependency on traitlets 5.13.x, but only declared a
-        # version requirement of traitlets>5.
-        # See https://github.com/ipython/ipython/issues/14352.
-        # This issue was fixed by https://github.com/ipython/ipython/pull/14353,
-        # which first appeared in IPython 8.22.1.
-        # As such, we just need to avoid that version in order to get the
-        # dependencies that we need. IPython probably should've yanked 8.22.0.
-        "IPython!=8.22.0",
-        "greenlet",
-        *cachetools_lib,
-    }
-    | usage_common
-    | sqlglot_lib
-    | classification_lib
+        {
+            *sqlalchemy_lib,
+            # Required for SQL profiling.
+            *great_expectations_lib,
+            # scipy version restricted to reduce backtracking, used by great-expectations,
+            "scipy>=1.7.2",
+            # GE added handling for higher version of jinja2
+            # https://github.com/great-expectations/great_expectations/pull/5382/files
+            # datahub does not depend on traitlets directly but great expectations does.
+            # https://github.com/ipython/traitlets/issues/741
+            "traitlets!=5.2.2",
+            # GE depends on IPython - we have no direct dependency on it.
+            # IPython 8.22.0 added a dependency on traitlets 5.13.x, but only declared a
+            # version requirement of traitlets>5.
+            # See https://github.com/ipython/ipython/issues/14352.
+            # This issue was fixed by https://github.com/ipython/ipython/pull/14353,
+            # which first appeared in IPython 8.22.1.
+            # As such, we just need to avoid that version in order to get the
+            # dependencies that we need. IPython probably should've yanked 8.22.0.
+            "IPython!=8.22.0",
+            "greenlet",
+            *cachetools_lib,
+        }
+        | usage_common
+        | sqlglot_lib
+        | classification_lib
 )
 
 aws_common = {
@@ -457,34 +458,34 @@ plugins: Dict[str, Set[str]] = {
     # sqlalchemy-bigquery is included here since it provides an implementation of
     # a SQLalchemy-conform STRUCT type definition
     "athena": sql_common
-    # We need to set tenacity lower than 8.4.0 as
-    # this version has missing dependency asyncio
-    # https://github.com/jd/tenacity/issues/471
-    | {
-        "PyAthena[SQLAlchemy]>=2.6.0,<3.0.0",
-        "sqlalchemy-bigquery>=1.4.1",
-        "tenacity!=8.4.0",
-    },
+              # We need to set tenacity lower than 8.4.0 as
+              # this version has missing dependency asyncio
+              # https://github.com/jd/tenacity/issues/471
+              | {
+                  "PyAthena[SQLAlchemy]>=2.6.0,<3.0.0",
+                  "sqlalchemy-bigquery>=1.4.1",
+                  "tenacity!=8.4.0",
+              },
     "azure-ad": set(),
     "azure-data-factory": azure_data_factory,
     "bigquery": sql_common
-    | bigquery_common
-    | sqlglot_lib
-    | classification_lib
-    | {
-        # Pinned to 0.2.2 because 0.3.0 changed the import path from
-        # google.cloud.datacatalog.lineage_v1 to google.cloud.datacatalog_lineage,
-        # which breaks existing code using the old import path
-        "google-cloud-datacatalog-lineage==0.2.2",
-    },
+                | bigquery_common
+                | sqlglot_lib
+                | classification_lib
+                | {
+                    # Pinned to 0.2.2 because 0.3.0 changed the import path from
+                    # google.cloud.datacatalog.lineage_v1 to google.cloud.datacatalog_lineage,
+                    # which breaks existing code using the old import path
+                    "google-cloud-datacatalog-lineage==0.2.2",
+                },
     "bigquery-slim": bigquery_common,
     "bigquery-queries": sql_common | bigquery_common | sqlglot_lib,
     "clickhouse": sql_common | clickhouse_common,
     "clickhouse-usage": sql_common | usage_common | clickhouse_common,
     "cockroachdb": sql_common
-    | postgres_common
-    | aws_common
-    | {"sqlalchemy-cockroachdb<2.0.0"},
+                   | postgres_common
+                   | aws_common
+                   | {"sqlalchemy-cockroachdb<2.0.0"},
     "datahub-lineage-file": set(),
     "datahub-business-glossary": set(),
     "dataplex": dataplex_common,
@@ -528,22 +529,23 @@ plugins: Dict[str, Set[str]] = {
     "glue": aws_common | cachetools_lib,
     # hdbcli is supported officially by SAP, sqlalchemy-hana is built on top but not officially supported
     "hana": sql_common
-    | {
-        "sqlalchemy-hana>=0.5.0; platform_machine != 'aarch64' and platform_machine != 'arm64'",
-        "hdbcli>=2.11.20; platform_machine != 'aarch64' and platform_machine != 'arm64'",
-    },
+            | {
+                "sqlalchemy-hana>=0.5.0; platform_machine != 'aarch64' and platform_machine != 'arm64'",
+                "hdbcli>=2.11.20; platform_machine != 'aarch64' and platform_machine != 'arm64'",
+            },
     "hive": sql_common
-    | pyhive_common
-    | {
-        "databricks-dbapi",
-        *great_expectations_lib,
-    },
+            | pyhive_common
+            | {
+                "databricks-dbapi",
+                *great_expectations_lib,
+            },
     # keep in sync with presto-on-hive until presto-on-hive will be removed
     # Supports both SQL (psycopg2/pymysql) and Thrift (pymetastore) connection types
     # kerberos is required for GSSAPI auth (pure-sasl delegates to it)
     "hive-metastore": sql_common
-    | pyhive_common
-    | {"psycopg2-binary", "pymysql>=1.0.2", "pymetastore>=0.4.2", "tenacity>=8.0.1", "kerberos>=1.3.0"},
+                      | pyhive_common
+                      | {"psycopg2-binary", "pymysql>=1.0.2", "pymetastore>=0.4.2", "tenacity>=8.0.1",
+                         "kerberos>=1.3.0"},
     "iceberg": iceberg_common,
     "iceberg-catalog": aws_common,
     "json-schema": {"requests"},
@@ -576,17 +578,17 @@ plugins: Dict[str, Set[str]] = {
     "presto": sql_common | pyhive_common | trino,
     # presto-on-hive is an alias for hive-metastore and needs to be kept in sync
     "presto-on-hive": sql_common
-    | pyhive_common
-    | {"psycopg2-binary", "pymysql>=1.0.2"},
+                      | pyhive_common
+                      | {"psycopg2-binary", "pymysql>=1.0.2"},
     "pulsar": {"requests"},
     "redash": {"redash-toolbelt", "sql-metadata"} | sqlglot_lib,
     "redshift": sql_common
-    | redshift_common
-    | usage_common
-    | sqlglot_lib
-    | classification_lib
-    | {"db-dtypes"}  # Pandas extension data types
-    | cachetools_lib,
+                | redshift_common
+                | usage_common
+                | sqlglot_lib
+                | classification_lib
+                | {"db-dtypes"}  # Pandas extension data types
+                | cachetools_lib,
     # S3 includes PySpark by default for profiling support (backward compatible)
     # Standard installation: pip install 'acryl-datahub[s3]' (with PySpark)
     # Lightweight installation: pip install 'acryl-datahub[s3-slim]' (no PySpark, no profiling)
@@ -607,21 +609,21 @@ plugins: Dict[str, Set[str]] = {
     "preset": superset_common,
     "tableau": {"tableauserverclient>=0.24.0"} | sqlglot_lib,
     "teradata": sql_common
-    | usage_common
-    | sqlglot_lib
-    | {
-        # On 2024-10-30, teradatasqlalchemy 20.0.0.2 was released. This version seemed to cause issues
-        # in our CI, so we're pinning the version for now.
-        "teradatasqlalchemy>=17.20.0.0,<=20.0.0.2",
-    },
+                | usage_common
+                | sqlglot_lib
+                | {
+                    # On 2024-10-30, teradatasqlalchemy 20.0.0.2 was released. This version seemed to cause issues
+                    # in our CI, so we're pinning the version for now.
+                    "teradatasqlalchemy>=17.20.0.0,<=20.0.0.2",
+                },
     "trino": sql_common | trino,
     "starburst-trino-usage": sql_common | usage_common | trino,
     "nifi": {"requests", "packaging", "requests-gssapi"},
     "powerbi": (
-        microsoft_common
-        | {"lark[regex]==1.1.4", "sqlparse", "more-itertools"}
-        | sqlglot_lib
-        | threading_timeout_common
+            microsoft_common
+            | {"lark[regex]==1.1.4", "sqlparse", "more-itertools"}
+            | sqlglot_lib
+            | threading_timeout_common
     ),
     "powerbi-report-server": powerbi_report_server,
     "vertica": sql_common | {"vertica-sqlalchemy-dialect[vertica-python]==0.0.8.2"},
@@ -629,10 +631,10 @@ plugins: Dict[str, Set[str]] = {
     # databricks is alias for unity-catalog and needs to be kept in sync
     "databricks": databricks_common | databricks | sql_common,
     "fivetran": snowflake_common
-    | bigquery_common
-    | databricks_common
-    | sqlalchemy_lib
-    | sqlglot_lib,
+                | bigquery_common
+                | databricks_common
+                | sqlalchemy_lib
+                | sqlglot_lib,
     "snaplogic": set(),
     "qlik-sense": sqlglot_lib | {"requests", "websocket-client"},
     "sigma": sqlglot_lib | {"requests"},
@@ -690,7 +692,6 @@ mypy_stubs = {
     "types-protobuf>=4.21.0.1",
     "sqlalchemy2-stubs",
 }
-
 
 test_api_requirements = {
     "pytest>=6.2.2",
@@ -926,6 +927,7 @@ entry_points = {
         "neo4j = datahub.ingestion.source.neo4j.neo4j_source:Neo4jSource",
         "vertexai = datahub.ingestion.source.vertexai.vertexai:VertexAISource",
         "hex = datahub.ingestion.source.hex.hex:HexSource",
+        "flink-catalog = datahub.ingestion.source.flink_catalog.source:FlinkCatalogSource",
     ],
     "datahub.ingestion.transformer.plugins": [
         "pattern_cleanup_ownership = datahub.ingestion.transformer.pattern_cleanup_ownership:PatternCleanUpOwnership",
@@ -984,7 +986,6 @@ entry_points = {
         "http = datahub.ingestion.fs.http_fs:HttpFileSystem",
     ],
 }
-
 
 setuptools.setup(
     # Package metadata.

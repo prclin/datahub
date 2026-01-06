@@ -18,6 +18,14 @@ from datahub.emitter.mcp_builder import (
     gen_containers,
 )
 from datahub.ingestion.api.common import PipelineContext
+from datahub.ingestion.api.decorators import (
+    SupportStatus,
+    capability,
+    config_class,
+    platform_name,
+    support_status,
+)
+from datahub.ingestion.api.source import SourceCapability
 from datahub.ingestion.api.workunit import MetadataWorkUnit
 from datahub.ingestion.source.common.subtypes import (
     DatasetContainerSubTypes,
@@ -105,6 +113,16 @@ class FlinkCatalogReport(StatefulIngestionReport):
     pass
 
 
+@platform_name("Flink")
+@config_class(FlinkCatalogConfig)
+@support_status(SupportStatus.INCUBATING)
+@capability(SourceCapability.PLATFORM_INSTANCE, "Enabled by default")
+@capability(SourceCapability.SCHEMA_METADATA, "Enabled by default")
+@capability(SourceCapability.PARTITION_SUPPORT, "Enabled by default")
+@capability(SourceCapability.DESCRIPTIONS, "Enabled by default")
+@capability(SourceCapability.CONTAINERS, "Enabled by default")
+@capability(SourceCapability.LINEAGE_COARSE, "does not support", supported=False)
+@capability(SourceCapability.LINEAGE_FINE, "does not support", supported=False)
 class FlinkCatalogSource(StatefulIngestionSourceBase):
     platform: str = "flink"
     watermark_tag_urn: str = make_tag_urn("flink.watermark")
