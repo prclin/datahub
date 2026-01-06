@@ -31,13 +31,47 @@ class CatalogDatabase:
         return self.j_database.getProperties()
 
 
+def get_data_type_factory(jvm) -> JavaObject:
+    constructors = jvm.Class.forName(
+        "org.apache.flink.table.catalog.DataTypeFactoryImpl"
+    ).getDeclaredConstructors()
+    constructor = None
+    for constructor in constructors:
+        if constructor.getParameterTypes().length == 3:
+            break
+    if not constructor:
+        raise Exception(
+            "org.apache.flink.table.catalog.DataTypeFactoryImpl does not exist!"
+        )
+
+    classloader = jvm.Thread.currentThread().getContextClassLoader()
+    config = jvm.org.apache.flink.table.api.TableConfig.getDefault()
+    serializer_config = (
+        jvm.org.apache.flink.api.common.serialization.SerializerConfigImpl()
+    )
+    clazz = jvm.Class.forName("java.lang.Class")
+    parameter_classes = jvm.java.lang.reflect.Array.newInstance(clazz, 3)
+    parameter_classes[0] = classloader.getClass()
+    parameter_classes[1] = config.getClass()
+    parameter_classes[2] = serializer_config.getClass()
+    invoker = jvm.org.apache.flink.api.python.shaded.py4j.reflection.MethodInvoker.buildInvoker(
+        constructor, parameter_classes
+    )
+
+    obj = jvm.Class.forName("java.lang.Object")
+    parameters = jvm.java.lang.reflect.Array.newInstance(obj, 3)
+    parameters[0] = classloader
+    parameters[1] = config
+    parameters[2] = serializer_config
+    r_engine = jvm.org.apache.flink.api.python.shaded.py4j.reflection.ReflectionEngine()
+    data_type_factory = r_engine.invoke(None, invoker, parameters)
+
+    return data_type_factory
+
+
 class Column:
     __jvm = get_gateway().jvm
-    data_type_factory = __jvm.org.apache.flink.table.catalog.DataTypeFactoryImpl(
-        __jvm.Thread.currentThread().contextClassloader,
-        __jvm.org.apache.flink.table.api.TableConfig.getDefault(),
-        None,
-    )
+    data_type_factory = get_data_type_factory(__jvm)
 
     def __init__(self, j_column: JavaObject):
         self.j_column = j_column
@@ -46,7 +80,7 @@ class Column:
         )
         self.column_type = ColumnType(column_type)
         self.name = j_column.getName()
-        self.comment = j_column.getComment()
+        self.comment = str(j_column.getComment().orElse(None))
 
 
 TypeClasses = Union[
@@ -108,6 +142,9 @@ class ColumnType:
         # long type like MAP<STRING,INT>,ARRAY<STRING> ...
         self.native_data_type = j_column_type.toString()
         self.nullable = j_column_type.isNullable()
+
+        self.fields: Optional[list[tuple[str, str | None, ColumnType]]] = None
+
         # process subtypes
         type_class = self.TYPE_MAP.get(type_name, StringTypeClass)
         match type_class:
@@ -135,7 +172,7 @@ class ColumnType:
                 self.fields = [
                     (
                         str(field.getName()),
-                        str(field.description) if field.description else None,
+                        field.getDescription().orElse(None),
                         ColumnType(field.getType()),
                     )
                     for field in fields
@@ -151,7 +188,7 @@ class Schema:
 
     def get_primary_keys(self) -> list[str]:
         primary_key = self.j_schema.getPrimaryKey().orElse(None)
-        primary_keys = primary_key.getColumnNames() if primary_key else []
+        primary_keys = list(primary_key.getColumnNames()) if primary_key else []
         return primary_keys
 
     def get_watermark_spec(self) -> tuple[str, str]:
@@ -180,7 +217,7 @@ class CatalogTable:
         return self.j_table.getTableKind().name()
 
     def get_options(self) -> dict[str, str]:
-        return self.j_table.getOptions()
+        return dict(self.j_table.getOptions())
 
     def get_comment(self) -> str:
         return self.j_table.getComment()
@@ -219,7 +256,9 @@ class FlinkHiveCatalog:
         # construct HiveConf
         hive_conf = gateway.jvm.org.apache.hadoop.hive.conf.HiveConf()
         if hive_conf_dir:
-            hive_conf.addResource(hive_conf_dir)
+            path = gateway.jvm.org.apache.hadoop.fs.Path(hive_conf_dir, "hive-site.xml")
+            inputs = path.getFileSystem(hive_conf).open(path)
+            hive_conf.addResource(inputs, path.toString())
         if hive_conf_dict:
             for key, value in hive_conf_dict:
                 hive_conf.set(key, value)
@@ -228,6 +267,15 @@ class FlinkHiveCatalog:
                 catalog_name, default_database, hive_conf, hive_version
             )
         )
+
+    def open(self):
+        self.j_hive_catalog.open()
+
+    def list_databases(self) -> list[str]:
+        return self.j_hive_catalog.listDatabases()
+
+    def list_tables(self, database: str) -> list[str]:
+        return self.j_hive_catalog.listTables(database)
 
     def get_database(self, database: str) -> CatalogDatabase:
         return CatalogDatabase(self.j_hive_catalog.getDatabase(database))
@@ -238,7 +286,7 @@ class FlinkHiveCatalog:
         )
 
     def instantiate_catalog_table(self, hive_table: HiveTable) -> CatalogTable:
-        catalog_table = self.j_hive_catalog.instantiateCatalogTable(hive_table)
+        catalog_table = self.j_hive_catalog.instantiateCatalogTable(hive_table.j_table)
         return CatalogTable(catalog_table)
 
 

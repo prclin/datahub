@@ -28,7 +28,6 @@ from datahub.ingestion.source.flink_catalog.catalog import (
     FlinkHiveCatalog,
     HiveTable,
 )
-from datahub.ingestion.source.flink_catalog.java_gateway import get_gateway
 from datahub.ingestion.source.state.stale_entity_removal_handler import (
     StatefulStaleMetadataRemovalConfig,
 )
@@ -106,7 +105,7 @@ class FlinkCatalogReport(StatefulIngestionReport):
     pass
 
 
-class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
+class FlinkCatalogSource(StatefulIngestionSourceBase):
     platform: str = "flink"
     watermark_tag_urn: str = make_tag_urn("flink.watermark")
 
@@ -116,16 +115,22 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         self.ctx = ctx
         self.report = FlinkCatalogReport()
         self.catalog = self.get_catalog()
-        jvm = get_gateway().jvm
-        self.data_type_factory = jvm.org.apache.flink.table.catalog.DataTypeFactoryImpl(
-            jvm.Thread.currentThread().contextClassloader,
-            jvm.org.apache.flink.table.api.TableConfig.getDefault(),
-            None,
-        )
+        self.catalog.open()
+
+    @classmethod
+    def create(cls, config_dict: dict, ctx: PipelineContext):
+        config = FlinkCatalogConfig.model_validate(config_dict)
+        return cls(config, ctx)
+
+    def get_report(self) -> FlinkCatalogReport:
+        return self.report
 
     def get_workunits_internal(self) -> Iterable[MetadataWorkUnit]:
         # add flink watermark tag
         yield self.gen_watermark_tag()
+
+        # catalog container
+        yield from self.gen_catalog_containers()
 
         # database level
         databases = self.get_syncable_databases()
@@ -137,7 +142,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             # table and view level
             tables = self.get_syncable_tables(database)
             for table in tables:
-                dataset_urn = self.gen_dataset_urn(database, table)
+                dataset_urn = self.gen_dataset_urn(table)
                 # to container
                 yield from add_dataset_to_container(
                     self.gen_database_key(database), dataset_urn
@@ -206,7 +211,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
                 isPartOfKey=name in primary_keys,
                 isPartitioningKey=name in partition_keys,
                 globalTags=watermark_tag if name == watermark_column else None,
-                jsonProps=json.dumps({watermark_expression})
+                jsonProps=json.dumps(watermark_expression)
                 if name == watermark_column
                 else None,
             )
@@ -214,7 +219,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             # if column's type is Row, add subcolumns
             if column_type.fields:
                 for field, description, field_type in column_type.fields:
-                    field_name = f"${name}.${field}"
+                    field_name = f"{name}.{field}"
                     schema_field = SchemaFieldClass(
                         fieldPath=field_name,
                         type=SchemaFieldDataTypeClass(field_type.type_class),
@@ -239,8 +244,8 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             raw_schema = catalog_table.get_original_query()
         # construct schema metadata
         schema_metadata = SchemaMetadataClass(
-            schemaName=f"${database}.${table}",
-            platform=self.platform,
+            schemaName=f"{database}.{table}",
+            platform=make_data_platform_urn(self.platform),
             version=0,
             hash="",
             platformSchema=OtherSchemaClass(raw_schema),
@@ -249,7 +254,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         )
 
         return MetadataChangeProposalWrapper(
-            entityUrn=self.gen_dataset_urn(database, table), aspect=schema_metadata
+            entityUrn=self.gen_dataset_urn(table), aspect=schema_metadata
         ).as_workunit()
 
     def gen_dataset_properties(
@@ -264,11 +269,11 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         options["location"] = hive_table.get_location()
 
         return MetadataChangeProposalWrapper(
-            entityUrn=self.gen_dataset_urn(database, table),
+            entityUrn=self.gen_dataset_urn(table),
             aspect=DatasetPropertiesClass(
                 customProperties=options,
                 name=table,
-                qualifiedName=f"${database}.${table}",
+                qualifiedName=f"{database}.{table}",
                 description=catalog_table.get_comment(),
             ),
         ).as_workunit()
@@ -300,10 +305,10 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         else:
             return None
 
-    def gen_dataset_urn(self, database, name: str) -> str:
+    def gen_dataset_urn(self, table: str) -> str:
         return make_dataset_urn_with_platform_instance(
-            self.platform,
-            f"${database}.${name}",
+            make_data_platform_urn(self.platform),
+            table,
             self.config.platform_instance,
             self.config.env,
         )
@@ -321,7 +326,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
         catalog_key = self.gen_catalog_key()
         database_key = self.gen_database_key(database)
         yield from gen_containers(
-            database_key,
+            container_key=database_key,
             name=database,
             sub_types=[DatasetContainerSubTypes.DATABASE],
             parent_container_key=catalog_key,
@@ -364,7 +369,7 @@ class FlinkCatalogSource(metaclass=StatefulIngestionSourceBase):
             if config.database_pattern.allowed(database)
         ]
 
-    def get_catalog(self):
+    def get_catalog(self) -> FlinkHiveCatalog:
         config = self.config
         return FlinkHiveCatalog(
             config.name,

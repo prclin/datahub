@@ -115,7 +115,7 @@ def capture_java_exception(f):
         try:
             return f(*a, **kw)
         except Py4JJavaError as e:
-            from pyflink.java_gateway import get_gateway
+            from datahub.ingestion.source.flink_catalog.java_gateway import get_gateway
 
             get_gateway().jvm.org.apache.flink.client.python.PythonEnvUtils.setPythonException(
                 e.java_exception
